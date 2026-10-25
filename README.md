@@ -51,7 +51,7 @@ report = processor.process_and_report(raw_csv)
 print(report)
 ```
 
-Example Output:
+## Example Output:
 
 ```html
 <ul>
@@ -61,7 +61,7 @@ Example Output:
 </ul>
 ```
 
-Extensibility Guide:
+## Extensibility Guide:
 
 To add support for a new output format (e.g., JSON Report), simply implement the `ReportGenerator` interface:
 
