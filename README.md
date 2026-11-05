@@ -1,76 +1,74 @@
-# Extensible Data Processing Engine
+# Data Processing Engine
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Design Pattern: Strategy](https://img.shields.io/badge/Pattern-Strategy-green.svg)](https://en.wikipedia.org/wiki/Strategy_pattern)
-[![Architecture: SOLID](https://img.shields.io/badge/Architecture-SOLID-orange.svg)](https://en.wikipedia.org/wiki/SOLID)
+A small Python pipeline that parses raw data (CSV, JSON or XML), removes incomplete records and produces a report (text, HTML or JSON). It is an exercise in object-oriented design: every step is an interface with interchangeable implementations, so a new format can be added without touching the existing code.
 
-A modular, enterprise-grade data processing pipeline built in Python. This system is designed to ingest raw data in various formats, validate the records against business rules, and generate formatted reports. 
+Requires Python 3.10+ and no extra packages.
 
-The architecture strictly adheres to core **SOLID principles**, ensuring the codebase remains highly extensible, testable, and maintainable as new data sources and reporting requirements scale.
+```
+python data_processing_engine.py          # demo
+python -m unittest discover tests -v      # run the 13 tests
+```
 
----
+## Design
 
-##  Architectural Patterns
+```
+raw text ──> DataParser ──> RecordValidator ──> ReportGenerator ──> report
+             CSVParser      DataValidator       TextReportGenerator
+             JSONParser                         HTMLReportGenerator
+             XMLParser                          JSONReportGenerator
+```
 
-The engine avoids tight coupling and monolithic procedural logic by leveraging behavioral design patterns and abstractions:
+- **Strategy pattern:** `DataParser`, `RecordValidator` and `ReportGenerator` are abstract base classes. Each concrete class is one interchangeable strategy.
+- **Dependency injection:** `DataProcessor` receives its parser, validator and reporter in the constructor instead of creating them. It only decides the order of the steps.
+- **Open/closed principle:** a new format, such as YAML, is a new subclass; the processor does not change.
+- **Single responsibility:** parsers only structure data, the validator only filters, and reporters only format.
 
-### 1. Strategy Pattern (Open/Closed Principle)
-Data parsing and report generation are abstracted behind the `DataParser` and `ReportGenerator` Abstract Base Classes (ABCs).
-- **Ingestion:** Supports dynamic swapping of `CSVParser`, `JSONParser`, and `XMLParser` without modifying the core execution logic. 
-- **Extensibility:** New data formats (e.g., YAML) can be introduced simply by creating a new subclass, fully satisfying the Open/Closed Principle.
-
-### 2. Dependency Injection (Dependency Inversion)
-The core `DataProcessor` class does not instantiate its own dependencies. Instead, the specific parser, validator, and reporter are injected at runtime. 
-- **Decoupling:** The processor acts purely as an orchestrator. It knows *when* to execute steps, but relies on injected dependencies to know *how* to execute them.
-- **Testability:** This design allows for seamless unit testing by injecting mock parsers or reporters.
-
-### 3. Single Responsibility Principle (SRP)
-Data validation logic (e.g., stripping incomplete records) is entirely isolated into its own `DataValidator` service. Parsing classes are strictly responsible for structuring data, and reporters are strictly responsible for formatting, preventing domain overlap.
-
----
-
-##  Usage & Implementation
-
-The pipeline is assembled dynamically based on runtime requirements.
+## Usage
 
 ```python
 from data_processing_engine import DataProcessor, CSVParser, DataValidator, HTMLReportGenerator
 
-# 1. Define raw input
-raw_csv = "Name,Age\nAlice,30\nBob,\nCharlie,25"
+raw_csv = 'Name,City\nAlice,"Berlin, Germany"\nBob,\nCharlie,Munich'
 
-# 2. Assemble the pipeline via Dependency Injection
 processor = DataProcessor(
     parser=CSVParser(),
     validator=DataValidator(),
-    reporter=HTMLReportGenerator()
+    reporter=HTMLReportGenerator(),
 )
-
-# 3. Execute processing (Automatically filters incomplete records like 'Bob')
-report = processor.process_and_report(raw_csv)
-print(report)
+print(processor.process_and_report(raw_csv))
 ```
 
-## Example Output:
+Output (Bob is removed because his city is missing):
 
 ```html
 <ul>
-  <li>['Name', 'Age']</li>
-  <li>['Alice', '30']</li>
-  <li>['Charlie', '25']</li>
+  <li>Name, City</li>
+  <li>Alice, Berlin, Germany</li>
+  <li>Charlie, Munich</li>
 </ul>
 ```
 
-## Extensibility Guide:
+## Input formats
 
-To add support for a new output format (e.g., JSON Report), simply implement the `ReportGenerator` interface:
+| Parser | Expected input |
+|---|---|
+| `CSVParser` | Comma-separated lines; quoted fields may contain commas (uses Python's `csv` module) |
+| `JSONParser` | An array of arrays, or an array of objects |
+| `XMLParser` | `<record><field>…</field></record>` elements, with or without a root element (uses `xml.etree.ElementTree`) |
+
+`HTMLReportGenerator` escapes every value, so input such as `<script>` is shown as text instead of running in a browser.
+
+## Tests
+
+`tests/test_data_processing_engine.py` checks each parser (including quoted commas and empty XML fields), the validator, HTML escaping, the full pipeline for all three formats, and that the processor works with mocked dependencies.
+
+## Adding a format
 
 ```python
-class JSONReportGenerator(ReportGenerator):
-    def generate(self, records: List[List[Any]]) -> str:
-        import json
-        return json.dumps(records, indent=2)
+class YAMLParser(DataParser):
+    def parse(self, raw_data: str) -> list:
+        import yaml
+        return yaml.safe_load(raw_data)
+
+processor = DataProcessor(YAMLParser(), DataValidator(), TextReportGenerator())
 ```
-
-Pass `JSONReportGenerator()` into the `DataProcessor` upon instantiation, and the system will immediately adapt without core modifications.
-
