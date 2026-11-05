@@ -1,110 +1,138 @@
-from abc import ABC, abstractmethod
+"""A small data pipeline: parse -> validate -> report.
+
+Each step is an interface (abstract base class) with interchangeable
+implementations (Strategy pattern), and DataProcessor receives them through
+its constructor (dependency injection), so a step can be swapped or mocked
+without changing the processor.
+"""
+import csv
+import html
+import io
 import json
-from typing import List, Any
+import xml.etree.ElementTree as ET
+from abc import ABC, abstractmethod
+from typing import Any, List
+
+Record = List[Any]
+
 
 # ==========================================
-# INTERFACES (ABSTRACTIONS)
+# INTERFACES
 # ==========================================
 
 class DataParser(ABC):
     @abstractmethod
-    def parse(self, raw_data: str) -> List[List[Any]]:
-        pass
+    def parse(self, raw_data: str) -> List[Record]:
+        """Turns raw text into a list of records (each record is a list of fields)."""
+
+
+class RecordValidator(ABC):
+    @abstractmethod
+    def validate(self, records: List[Record]) -> List[Record]:
+        """Returns only the records that pass the rules."""
+
 
 class ReportGenerator(ABC):
     @abstractmethod
-    def generate(self, records: List[List[Any]]) -> str:
-        pass
+    def generate(self, records: List[Record]) -> str:
+        """Formats records as a report."""
 
 
 # ==========================================
-# CONCRETE PARSERS (Strategy Pattern)
+# PARSERS
 # ==========================================
 
 class CSVParser(DataParser):
-    def parse(self, raw_data: str) -> List[List[Any]]:
-        lines = raw_data.split("\n")
-        return [line.split(",") for line in lines if line]
+    def parse(self, raw_data: str) -> List[Record]:
+        # The csv module handles quoted fields such as "Berlin, Germany"
+        reader = csv.reader(io.StringIO(raw_data))
+        return [row for row in reader if row]
+
 
 class JSONParser(DataParser):
-    def parse(self, raw_data: str) -> List[List[Any]]:
-        return json.loads(raw_data)
+    """Accepts a JSON array of arrays, or an array of objects (values are taken in key order)."""
 
-class XMLParser(DataParser):
-    def parse(self, raw_data: str) -> List[List[Any]]:
+    def parse(self, raw_data: str) -> List[Record]:
+        data = json.loads(raw_data)
+        if not isinstance(data, list):
+            raise ValueError("JSON input must be an array of records.")
         records = []
-        for chunk in raw_data.split("<record>"):
-            if "</record>" in chunk:
-                value = chunk.split("</record>")[0]
-                records.append(value.split("<field>"))
+        for entry in data:
+            if isinstance(entry, list):
+                records.append(entry)
+            elif isinstance(entry, dict):
+                records.append(list(entry.values()))
+            else:
+                raise ValueError(f"Unsupported JSON record: {entry!r}")
         return records
 
 
-# ==========================================
-# VALIDATION (Single Responsibility Principle)
-# ==========================================
+class XMLParser(DataParser):
+    """Expects <record><field>...</field>...</record> elements, with or without a root element."""
 
-class DataValidator:
-    def validate(self, records: List[List[Any]]) -> List[List[Any]]:
-        cleaned = []
-        for record in records:
-            if record:
-                # all() returns True if all fields are non-empty
-                if all(field != "" for field in record):
-                    cleaned.append(record)
-        return cleaned
+    def parse(self, raw_data: str) -> List[Record]:
+        root = ET.fromstring(f"<root>{raw_data}</root>")
+        return [[(field.text or "").strip() for field in record.iter("field")]
+                for record in root.iter("record")]
 
 
 # ==========================================
-# CONCRETE REPORTERS (Strategy Pattern)
+# VALIDATION
+# ==========================================
+
+class DataValidator(RecordValidator):
+    """Removes empty records and records with any missing field."""
+
+    @staticmethod
+    def _is_present(field: Any) -> bool:
+        return field is not None and str(field).strip() != ""
+
+    def validate(self, records: List[Record]) -> List[Record]:
+        return [record for record in records
+                if record and all(self._is_present(field) for field in record)]
+
+
+# ==========================================
+# REPORTS
 # ==========================================
 
 class TextReportGenerator(ReportGenerator):
-    def generate(self, records: List[List[Any]]) -> str:
-        return "\n".join([str(record) for record in records])
+    def generate(self, records: List[Record]) -> str:
+        return "\n".join(", ".join(str(field) for field in record) for record in records)
+
 
 class HTMLReportGenerator(ReportGenerator):
-    def generate(self, records: List[List[Any]]) -> str:
-        output = "<ul>\n"
-        for record in records:
-            output += f"  <li>{str(record)}</li>\n"
-        output += "</ul>"
-        return output
+    def generate(self, records: List[Record]) -> str:
+        # html.escape stops input like <script> from running in the browser
+        items = "".join(
+            f"  <li>{html.escape(', '.join(str(field) for field in record))}</li>\n"
+            for record in records
+        )
+        return f"<ul>\n{items}</ul>"
+
+
+class JSONReportGenerator(ReportGenerator):
+    def generate(self, records: List[Record]) -> str:
+        return json.dumps(records, indent=2)
 
 
 # ==========================================
-# REFACTORED PROCESSOR (Dependency Injection)
+# PROCESSOR
 # ==========================================
 
 class DataProcessor:
-    def __init__(self, parser: DataParser, validator: DataValidator, reporter: ReportGenerator):
+    def __init__(self, parser: DataParser, validator: RecordValidator, reporter: ReportGenerator):
         self.parser = parser
         self.validator = validator
         self.reporter = reporter
 
     def process_and_report(self, raw_data: str) -> str:
-        # 1. Parse the raw data using the injected parser
         records = self.parser.parse(raw_data)
-        
-        # 2. Validate the records using the injected validator
         valid_records = self.validator.validate(records)
-        
-        # 3. Generate the report using the injected reporter
         return self.reporter.generate(valid_records)
 
 
-# ==========================================
-# USAGE EXAMPLE
-# ==========================================
 if __name__ == "__main__":
-    raw_csv = "Name,Age\nAlice,30\nBob,\nCharlie,25"
-    
-    # We assemble the processor with exactly the components we need
-    processor = DataProcessor(
-        parser=CSVParser(),
-        validator=DataValidator(),
-        reporter=HTMLReportGenerator()
-    )
-    
-    print("Generated HTML Report:")
+    raw_csv = 'Name,City\nAlice,"Berlin, Germany"\nBob,\nCharlie,Munich'
+    processor = DataProcessor(CSVParser(), DataValidator(), HTMLReportGenerator())
     print(processor.process_and_report(raw_csv))
